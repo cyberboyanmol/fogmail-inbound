@@ -1,3 +1,5 @@
+//  Source is taken from the un-maintained https://github.com/Flolagale/mailin and refactored
+
 import { Injectable, Logger } from '@nestjs/common';
 import { promisify } from 'util';
 import * as child_process from 'child_process';
