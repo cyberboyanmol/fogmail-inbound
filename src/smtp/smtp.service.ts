@@ -181,12 +181,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     //  Get the raw email from the temp directory.
     const rawEmail = await this.retrieveRawEmail(connection);
 
-    const [spamScore] = await Promise.all([
-      // await this.validateDkim(connection, rawEmail),
-      // await this.validateSpf(connection),
-      await this.computeSpamScore(connection, rawEmail),
-    ]);
-
+    const spamScore = await this.computeSpamScore(connection, rawEmail);
     this.logger.fatal(rawEmail, 'parsedEmail');
     this.logger.fatal(spamScore, 'spamScore');
   }
