@@ -13,17 +13,8 @@ import { SMTPServer } from 'smtp-server';
 import { v4 as uuidv4 } from 'uuid';
 import { MailUtilitiesService } from './mail-utilities.service';
 import { ConfigService } from '@nestjs/config';
-
-const configuration = {
-  disableDnsLookup: false,
-  disableDNSValidation: false,
-  port: 25,
-  tmp: 'InboundMails',
-  profile: true,
-  disableDkim: false,
-  disableSpamScore: false,
-  disableSpf: false,
-};
+import { InjectInboundMailParseQueue } from 'src/bullmq-queue/decorators/inject-queue.decorator';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class SmtpService implements OnModuleInit, OnModuleDestroy {
@@ -33,11 +24,21 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly mailUtilities: MailUtilitiesService,
     private configService: ConfigService,
+    @InjectInboundMailParseQueue() private _inboundMailParseService: Queue,
   ) {
     this.onAuth = this.onAuth.bind(this);
     this.onMailFrom = this.onMailFrom.bind(this);
     this.onRcptTo = this.onRcptTo.bind(this);
     this.onData = this.onData.bind(this);
+
+    this.configuration = {
+      port: this.configService.get<number>('PORT'),
+      tmp: this.configService.get<string>('TMP'),
+      profile: this.configService.get<boolean>('PROFILE'),
+      disableDkim: this.configService.get<boolean>('DISABLE_DKIM'),
+      disableSpamScore: this.configService.get<boolean>('DISABLE_SPAM_SCORE'),
+      disableSpf: this.configService.get<boolean>('DISABLE_SPF'),
+    };
   }
   onModuleInit() {
     this.start();
@@ -47,11 +48,11 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   }
 
   private start() {
-    if (!fs.existsSync(configuration.tmp)) {
-      shell.mkdir('-p', configuration.tmp);
+    if (!fs.existsSync(this.configuration.tmp)) {
+      shell.mkdir('-p', this.configuration.tmp);
     }
     /* Basic memory profiling. */
-    if (configuration.profile) {
+    if (this.configuration.profile) {
       this.logger.log('Enable memory profiling');
       setInterval(() => {
         const memoryUsage = process.memoryUsage();
@@ -82,8 +83,10 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.smtp = server;
-    server.listen(configuration.port, () => {
-      this.logger.log('Smtp server listening on port ' + configuration.port);
+    server.listen(this.configuration.port, () => {
+      this.logger.log(
+        'Smtp server listening on port ' + this.configuration.port,
+      );
     });
 
     server.on('close', () => {
@@ -91,7 +94,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     });
 
     server.on('error', (error) => {
-      if (configuration.port < 1000) {
+      if (this.configuration.port < 1000) {
         this.logger.error('Ports under 1000 require root privileges.');
       }
 
@@ -134,7 +137,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
       // const _session = session;
       const connection = _.cloneDeep(session);
       connection.id = uuidv4();
-      const mailPath = path.join(configuration.tmp, connection.id);
+      const mailPath = path.join(this.configuration.tmp, connection.id);
       connection.mailPath = mailPath;
       this.logger.verbose('Connection id ' + connection.id);
       this.logger.verbose(
@@ -181,9 +184,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     //  Get the raw email from the temp directory.
     const rawEmail = await this.retrieveRawEmail(connection);
 
-    const spamScore = await this.computeSpamScore(connection, rawEmail);
     this.logger.fatal(rawEmail, 'parsedEmail');
-    this.logger.fatal(spamScore, 'spamScore');
   }
 
   private async retrieveRawEmail(connection) {
@@ -225,17 +226,17 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   //   }
   // }
 
-  private async computeSpamScore(connection, rawEmail) {
-    if (configuration.disableSpamScore) {
-      return 0.0;
-    }
+  // private async computeSpamScore(connection, rawEmail) {
+  //   if (configuration.disableSpamScore) {
+  //     return 0.0;
+  //   }
 
-    try {
-      return await this.mailUtilities.computeSpamScore(rawEmail);
-    } catch (err) {
-      this.logger.error(connection.id + ' Spam score computation failed.');
-      this.logger.error(err);
-      return 0.0;
-    }
-  }
+  //   try {
+  //     return await this.mailUtilities.computeSpamScore(rawEmail);
+  //   } catch (err) {
+  //     this.logger.error(connection.id + ' Spam score computation failed.');
+  //     this.logger.error(err);
+  //     return 0.0;
+  //   }
+  // }
 }

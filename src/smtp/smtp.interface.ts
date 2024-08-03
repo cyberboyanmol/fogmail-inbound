@@ -7,18 +7,10 @@ export interface ISmtpOptions {
 }
 
 export interface IConfiguration {
-  host: string;
   port: number;
   tmp: string;
-  disableWebhook: boolean;
   disableDkim: boolean;
   disableSpf: boolean;
   disableSpamScore: boolean;
-  verbose: boolean;
-  debug: boolean;
-  logLevel: string;
   profile: boolean;
-  disableDNSValidation: boolean;
-  smtpOptions?: ISmtpOptions;
-  disableDnsLookup?: boolean;
 }

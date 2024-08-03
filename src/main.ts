@@ -4,6 +4,7 @@ import { SmtpModule } from './smtp/smtp.module';
 
 async function bootstrap() {
   const app = await NestFactory.createApplicationContext(SmtpModule);
+  app.flushLogs();
   app.enableShutdownHooks();
 }
 

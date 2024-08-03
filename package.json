@@ -20,11 +20,13 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@nestjs/bullmq": "^10.2.0",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.2.3",
     "@nestjs/core": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
     "bluebird": "^3.7.2",
+    "bullmq": "^5.12.0",
     "dotenv": "^16.4.5",
     "envalid": "^8.0.0",
     "extend": "^3.0.2",
