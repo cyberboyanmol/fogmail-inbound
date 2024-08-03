@@ -4,39 +4,27 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { IConfiguration, ISmtpOptions } from './smtp.interface';
-import { MailParser } from 'mailparser';
-import _ from 'lodash';
-import Promise from 'bluebird';
-import { convert } from 'html-to-text';
-import { EventEmitter } from 'events';
+import { IConfiguration } from './smtp.interface';
+import * as _ from 'lodash';
 import * as fs from 'fs';
-import path from 'path';
+import * as path from 'path';
 import * as shell from 'shelljs';
-import util from 'util';
 import { SMTPServer } from 'smtp-server';
-import uuid from 'uuid';
-import dns from 'dns';
-import net from 'net';
-import * as extend from 'extend';
+import { v4 as uuidv4 } from 'uuid';
 import { MailUtilitiesService } from './mail-utilities.service';
-const LOG_CONTEXT = 'Mailin';
-import LanguageDetect from 'languagedetect';
 import { ConfigService } from '@nestjs/config';
-// import logger from '../helpers/logger';
+
 const configuration = {
   disableDnsLookup: false,
   disableDNSValidation: false,
   port: 25,
-  host: '127.0.0.1',
   tmp: 'InboundMails',
   profile: true,
+  disableDkim: false,
+  disableSpamScore: false,
+  disableSpf: false,
 };
-interface ParsedMail {
-  text?: string;
-  html?: string;
-  [key: string]: unknown;
-}
+
 @Injectable()
 export class SmtpService implements OnModuleInit, OnModuleDestroy {
   public configuration: IConfiguration;
@@ -45,7 +33,12 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly mailUtilities: MailUtilitiesService,
     private configService: ConfigService,
-  ) {}
+  ) {
+    this.onAuth = this.onAuth.bind(this);
+    this.onMailFrom = this.onMailFrom.bind(this);
+    this.onRcptTo = this.onRcptTo.bind(this);
+    this.onData = this.onData.bind(this);
+  }
   onModuleInit() {
     this.start();
   }
@@ -60,21 +53,21 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     /* Basic memory profiling. */
     if (configuration.profile) {
       this.logger.log('Enable memory profiling');
-      // setInterval(() => {
-      //   const memoryUsage = process.memoryUsage();
-      //   const ram = memoryUsage.rss + memoryUsage.heapUsed;
-      //   const million = 1000000;
-      //   this.logger.debug(
-      //     'Ram Usage: ' +
-      //       ram / million +
-      //       'mb | rss: ' +
-      //       memoryUsage.rss / million +
-      //       'mb | heapTotal: ' +
-      //       memoryUsage.heapTotal / million +
-      //       'mb | heapUsed: ' +
-      //       memoryUsage.heapUsed / million,
-      //   );
-      // }, 500);
+      setInterval(() => {
+        const memoryUsage = process.memoryUsage();
+        const ram = memoryUsage.rss + memoryUsage.heapUsed;
+        const million = 1000000;
+        this.logger.debug(
+          'Ram Usage: ' +
+            ram / million +
+            'mb | rss: ' +
+            memoryUsage.rss / million +
+            'mb | heapTotal: ' +
+            memoryUsage.heapTotal / million +
+            'mb | heapUsed: ' +
+            memoryUsage.heapUsed / million,
+        );
+      }, 500);
     }
 
     const server = new SMTPServer({
@@ -89,7 +82,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.smtp = server;
-    server.listen(configuration.port, configuration.host, () => {
+    server.listen(configuration.port, () => {
       this.logger.log('Smtp server listening on port ' + configuration.port);
     });
 
@@ -109,10 +102,6 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
 
   public stop() {
     this.logger.fatal('Stopping inbound-smtp server.');
-    /*
-     * FIXME A bug in the RAI module prevents the callback to be called, so
-     * call end and call the callback directly.
-     */
     this.smtp.close();
   }
 
@@ -121,25 +110,30 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     streamCallback();
   }
 
-  private onMailFrom(address, session, streamCallback) {
-    const ack = function (err) {
-      streamCallback(err);
-    };
-    this.validateAddress('sender', address.address).then(ack).catch(ack);
+  private async onMailFrom(address, session, streamCallback) {
+    try {
+      this.logger.verbose('onRcpTo:', address.address, session.id);
+      streamCallback();
+    } catch (error) {
+      streamCallback(error);
+    }
   }
 
-  private onRcptTo(address, session, streamCallback) {
-    const ack = function (err) {
-      streamCallback(err);
-    };
-    this.validateAddress('recipient', address.address).then(ack).catch(ack);
+  private async onRcptTo(address, session, streamCallback) {
+    try {
+      // TODO : IMPLEMENT A METHOD TO VERIFY THE RECIPIENT ADDRESS
+      this.logger.verbose('onRcpTo:', address.address, session.id);
+      streamCallback();
+    } catch (error) {
+      streamCallback(error);
+    }
   }
 
   private onData(stream, session, onDataCallback) {
     try {
       // const _session = session;
       const connection = _.cloneDeep(session);
-      connection.id = uuid.v4();
+      connection.id = uuidv4();
       const mailPath = path.join(configuration.tmp, connection.id);
       connection.mailPath = mailPath;
       this.logger.verbose('Connection id ' + connection.id);
@@ -153,7 +147,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
       stream.pipe(fs.createWriteStream(mailPath));
 
       stream.on('data', (chunk) => {
-        this.logger.log('data', connection, chunk);
+        this.logger.log('data', connection.id, chunk);
       });
 
       stream.on('end', async () => {
@@ -162,15 +156,18 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
       });
 
       stream.on('close', () => {
-        this.logger.verbose('close', connection);
+        this.logger.verbose('close', connection.id);
+        onDataCallback();
       });
 
       stream.on('error', (error) => {
         this.logger.error('error', connection, error);
+        onDataCallback(error);
       });
     } catch (error) {
       this.logger.error('Exception occurred while performing onData callback');
       this.logger.error(error);
+      onDataCallback(error);
     }
   }
 
@@ -183,8 +180,15 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
 
     //  Get the raw email from the temp directory.
     const rawEmail = await this.retrieveRawEmail(connection);
-    const [parsedEmail] = await Promise.all([this.parsedEmail(connection)]);
-    console.log(parsedEmail, 'parsedEmail');
+
+    const [spamScore] = await Promise.all([
+      // await this.validateDkim(connection, rawEmail),
+      // await this.validateSpf(connection),
+      await this.computeSpamScore(connection, rawEmail),
+    ]);
+
+    this.logger.fatal(rawEmail, 'parsedEmail');
+    this.logger.fatal(spamScore, 'spamScore');
   }
 
   private async retrieveRawEmail(connection) {
@@ -192,87 +196,51 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     return rawEmail.toString();
   }
 
-  private async parsedEmail(connection) {
-    this.logger.verbose(`${connection.id} Parsing email.`);
-    /* Prepare the mail parser. */
-    const mailParser = new MailParser();
-    const mail = await new Promise((resolve) => {
-      mailParser.on('end', resolve);
-      fs.createReadStream(connection.mailPath).pipe(mailParser);
-    });
-    // Type guard to ensure mail is an object
-    if (typeof mail !== 'object' || mail === null) {
-      throw new Error('Parsed mail is not an object');
-    }
-    const parsedMail = mail as ParsedMail;
-    /*
-     * Make sure that both text and html versions of the
-     * body are available.
-     */
-    if (!parsedMail.text && !parsedMail.html) {
-      parsedMail.text = '';
-      parsedMail.html = '<div></div>';
-    } else if (!parsedMail.html) {
-      parsedMail.html = await this._convertTextToHtml(parsedMail.text);
-    } else if (!parsedMail.text) {
-      parsedMail.text = await this._convertHtmlToText(parsedMail.html);
-    }
+  // private async validateDkim(connection, rawEmail) {
+  //   if (configuration.disableDkim) {
+  //     return false;
+  //   }
 
-    return parsedMail;
-  }
+  //   this.logger.verbose(connection.id + ' Validating DKIM.');
+  //   try {
+  //     return await this.mailUtilities.validateDkim(rawEmail);
+  //   } catch (err) {
+  //     this.logger.error(connection.id + ' DKIM validation failed.');
+  //     this.logger.error(err);
+  //     return false;
+  //   }
+  // }
 
-  private async _convertTextToHtml(text: string) {
-    /* Replace newlines by <br>. */
-    text = text.replace(/(\n\r)|(\n)/g, '<br>');
-    /* Remove <br> at the beginning. */
-    text = text.replace(/^\s*(<br>)*\s*/, '');
-    /* Remove <br> at the end. */
-    text = text.replace(/\s*(<br>)*\s*$/, '');
+  // private async validateSpf(connection) {
+  //   if (configuration.disableSpf) {
+  //     return false;
+  //   }
 
-    return text;
-  }
+  //   this.logger.verbose(connection.id + ' Validating SPF.');
+  //   try {
+  //     return await this.mailUtilities.validateSpf(
+  //       connection.remoteAddress,
+  //       connection.from,
+  //       connection.clientHostname,
+  //     );
+  //   } catch (err) {
+  //     this.logger.error(connection.id + ' SPF validation failed.');
+  //     this.logger.error(err);
+  //     return false;
+  //   }
+  // }
 
-  private async _convertHtmlToText(html: string) {
-    return convert(html);
-  }
-
-  private async validateAddress(addressType, email) {
-    if (configuration.disableDnsLookup) return;
-
-    if (!email) {
-      throw new Error(
-        `550 5.1.1 <${email}>: ${addressType} address rejected: User unknown in local ${addressType} table`,
-      );
+  private async computeSpamScore(connection, rawEmail) {
+    if (configuration.disableSpamScore) {
+      return 0.0;
     }
 
-    const errorMessage = `450 4.1.8 <${email}>: ${addressType} address rejected: Domain not found`;
-
-    if (!['sender', 'recipient'].includes(addressType)) {
-      throw new Error('Address type not supported');
-    }
-
-    const domain = email.split('@')[1];
-
-    if (!configuration.disableDNSValidation) {
-      try {
-        const addresses = await dns.promises.resolveMx(domain);
-        if (!addresses || addresses.length === 0) throw new Error(errorMessage);
-        console.log(addresses);
-        // Sort MX records by priority and attempt to connect
-        for (const mx of addresses.sort((a, b) => a.priority - b.priority)) {
-          await new Promise((resolve, reject) => {
-            const socket = net.createConnection(25, mx.exchange, () => {
-              socket.destroy();
-              resolve();
-            });
-            socket.on('error', reject);
-          });
-          return; // Successfully connected
-        }
-        throw new Error(errorMessage); // No successful connection
-      } catch (err) {
-        throw new Error(errorMessage);
-      }
+    try {
+      return await this.mailUtilities.computeSpamScore(rawEmail);
+    } catch (err) {
+      this.logger.error(connection.id + ' Spam score computation failed.');
+      this.logger.error(err);
+      return 0.0;
     }
   }
 }
