@@ -4,7 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { IConfiguration } from './smtp.interface';
+import { IConfiguration } from '../interfaces/smtp.interface';
 import * as _ from 'lodash';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -13,7 +13,7 @@ import { SMTPServer } from 'smtp-server';
 import { v4 as uuidv4 } from 'uuid';
 import { MailUtilitiesService } from './mail-utilities.service';
 import { ConfigService } from '@nestjs/config';
-import { InjectInboundMailParseQueue } from 'src/bullmq-queue/decorators/inject-queue.decorator';
+import { InjectInboundMailParseQueue } from 'src/libraries/queues/decorators/inject-queue.decorator';
 import { Queue } from 'bullmq';
 
 @Injectable()

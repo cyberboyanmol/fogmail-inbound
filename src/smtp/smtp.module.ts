@@ -3,8 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { MailUtilitiesService } from './mail-utilities.service';
 import { SmtpService } from './smtp.service';
 import { BullModule } from '@nestjs/bullmq';
-import { QueueModule } from 'src/bullmq-queue/bullmq-queue.module';
-import { INBOUND_MAIL_PARSE_QUEUE } from 'src/bullmq-queue/queues';
+import { QueueModule } from 'src/libraries/queues/bullmq-queue.module';
+import { INBOUND_MAIL_PARSE_QUEUE } from 'src/libraries/queues/queues';
 
 @Module({
   imports: [
