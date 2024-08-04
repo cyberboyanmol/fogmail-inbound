@@ -4,7 +4,7 @@ import { BullModule } from '@nestjs/bullmq';
 import {
   ConfigurableModuleClass,
   OPTIONS_TYPE,
-} from './bullmq-queue.module.defination';
+} from './queue.module.defination';
 
 @Module({})
 export class QueueModule extends ConfigurableModuleClass {
