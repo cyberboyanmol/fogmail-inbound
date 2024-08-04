@@ -13,4 +13,5 @@ export interface IConfiguration {
   disableSpf: boolean;
   disableSpamScore: boolean;
   profile: boolean;
+  domain_lists: string[];
 }

@@ -15,6 +15,12 @@ import { MailUtilitiesService } from './mail-utilities.service';
 import { ConfigService } from '@nestjs/config';
 import { InjectInboundMailParseQueue } from 'src/libraries/queues/decorators/inject-queue.decorator';
 import { Queue } from 'bullmq';
+import {
+  MemberViewMailJob,
+  VisitorViewMailJob,
+} from 'src/libraries/queues/jobs/job.payload';
+import { QueueEventJobPattern } from 'src/libraries/queues/jobs/job.pattern';
+import { JobPriority } from 'src/libraries/queues/jobs/job.priority';
 
 @Injectable()
 export class SmtpService implements OnModuleInit, OnModuleDestroy {
@@ -34,26 +40,38 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     this.configuration = {
       port: this.configService.get<number>('PORT'),
       tmp: this.configService.get<string>('TMP'),
-      // Temporary Fixing this issue: Instead of getting boolean getting string
-      profile:
-        this.configService.get<string>('PROFILE') === 'true' ? true : false,
-      disableDkim:
-        this.configService.get<string>('DISABLE_DKIM') === 'true'
-          ? true
-          : false,
+      profile: this.configService.get<string>('PROFILE') === 'true',
+      disableDkim: this.configService.get<string>('DISABLE_DKIM') === 'true',
       disableSpamScore:
-        this.configService.get<string>('DISABLE_SPAM_SCORE') === 'true'
-          ? true
-          : false,
-      disableSpf:
-        this.configService.get<string>('DISABLE_SPF') === 'true' ? true : false,
+        this.configService.get<string>('DISABLE_SPAM_SCORE') === 'true',
+      disableSpf: this.configService.get<string>('DISABLE_SPF') === 'true',
+      domain_lists: this.configService.get<string[]>('DOMAIN_LISTS'),
     };
   }
   onModuleInit() {
-    this.start();
+    try {
+      this.start();
+    } catch (error) {
+      this.logger.error('Failed to start SMTP service', error);
+      throw error;
+    }
   }
   onModuleDestroy() {
     this.stop();
+  }
+
+  private enableMemoryProfiling() {
+    this.logger.log('Enable memory profiling');
+    setInterval(() => {
+      const memoryUsage = process.memoryUsage();
+      const ram = memoryUsage.rss + memoryUsage.heapUsed;
+      const million = 1000000;
+      this.logger.debug(
+        `Ram Usage: ${ram / million}mb | rss: ${memoryUsage.rss / million}mb | heapTotal: ${
+          memoryUsage.heapTotal / million
+        }mb | heapUsed: ${memoryUsage.heapUsed / million}`,
+      );
+    }, 500);
   }
 
   private start() {
@@ -63,29 +81,13 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
 
     /* Basic memory profiling. */
     if (this.configuration.profile) {
-      this.logger.log('Enable memory profiling');
-      setInterval(() => {
-        const memoryUsage = process.memoryUsage();
-        const ram = memoryUsage.rss + memoryUsage.heapUsed;
-        const million = 1000000;
-        this.logger.debug(
-          'Ram Usage: ' +
-            ram / million +
-            'mb | rss: ' +
-            memoryUsage.rss / million +
-            'mb | heapTotal: ' +
-            memoryUsage.heapTotal / million +
-            'mb | heapUsed: ' +
-            memoryUsage.heapUsed / million,
-        );
-      }, 500);
+      this.enableMemoryProfiling();
     }
 
     const server = new SMTPServer({
       authOptional: true,
       allowInsecureAuth: true,
       secure: false,
-      // logger: true,
       onAuth: this.onAuth,
       onData: this.onData,
       onMailFrom: this.onMailFrom,
@@ -95,7 +97,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     this.smtp = server;
     server.listen(this.configuration.port, () => {
       this.logger.log(
-        'Smtp server listening on port ' + this.configuration.port,
+        '🚀  Smtp server listening on port ' + this.configuration.port,
       );
     });
 
@@ -114,92 +116,204 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   }
 
   public stop() {
-    this.logger.fatal('Stopping inbound-smtp server.');
-    this.smtp.close();
+    this.logger.warn('Stopping inbound-smtp server.');
+    if (this.smtp) {
+      this.smtp.close(() => {
+        this.logger.log('SMTP server closed successfully');
+      });
+    }
   }
 
-  private onAuth(auth, session, streamCallback) {
+  private onAuth(auth, session, callback) {
     // TODO have to handle later. when  {authOptional:false}
-    streamCallback();
+    callback(null);
   }
 
-  private async onMailFrom(address, session, streamCallback) {
+  private async onMailFrom(address, session, callback) {
     try {
-      this.logger.verbose('onRcpTo:', address.address, session.id);
-      streamCallback();
-    } catch (error) {
-      streamCallback(error);
-    }
-  }
-
-  private async onRcptTo(address, session, streamCallback) {
-    try {
-      // TODO : IMPLEMENT A METHOD TO VERIFY THE RECIPIENT ADDRESS
-      this.logger.verbose('onRcpTo:', address.address, session.id);
-      streamCallback();
-    } catch (error) {
-      streamCallback(error);
-    }
-  }
-
-  private onData(stream, session, onDataCallback) {
-    try {
-      // const _session = session;
-      const connection = _.cloneDeep(session);
-      connection.id = uuidv4();
-      const mailPath = path.join(this.configuration.tmp, connection.id);
-      connection.mailPath = mailPath;
-      this.logger.verbose('Connection id ' + connection.id);
       this.logger.verbose(
-        connection.id +
-          ' Receiving message from ' +
-          connection.envelope.mailFrom.address,
+        `onMailFrom: ${address.address}, session: ${session.id}`,
       );
-
-      // write the stream of mail in the temp directory
-      stream.pipe(fs.createWriteStream(mailPath));
-
-      stream.on('data', (chunk) => {
-        this.logger.log('data', connection.id, chunk);
-      });
-
-      stream.on('end', async () => {
-        await this.dataReady(connection);
-        onDataCallback();
-      });
-
-      stream.on('close', () => {
-        this.logger.verbose('close', connection.id);
-        onDataCallback();
-      });
-
-      stream.on('error', (error) => {
-        this.logger.error('error', connection, error);
-        onDataCallback(error);
-      });
+      callback();
     } catch (error) {
-      this.logger.error('Exception occurred while performing onData callback');
-      this.logger.error(error);
-      onDataCallback(error);
+      this.logger.error(`Error in onMailFrom: ${error.message}`, error.stack);
+      callback(new Error('Error processing mail from address'));
     }
+  }
+
+  private async onRcptTo(address, session, callback) {
+    try {
+      this.logger.verbose(
+        `onRcptTo: ${address.address}, session: ${session.id}`,
+      );
+      // TODO: Implement recipient address verification
+      callback();
+    } catch (error) {
+      this.logger.error(`Error in onRcptTo: ${error.message}`, error.stack);
+      callback(new Error('Error processing recipient address'));
+    }
+  }
+
+  private onData(stream, session, callback) {
+    const connection = _.cloneDeep(session);
+    connection.id = uuidv4();
+    const mailPath = path.join(this.configuration.tmp, connection.id);
+    connection.mailPath = mailPath;
+
+    this.logger.verbose(`Connection id ${connection.id}`);
+    this.logger.verbose(
+      `${connection.id} Receiving message from ${connection.envelope.mailFrom.address}`,
+    );
+
+    const writeStream = fs.createWriteStream(mailPath);
+
+    stream.pipe(writeStream);
+
+    stream.on('error', (error) => {
+      this.logger.error(`Stream error for ${connection.id}`, error);
+      fs.unlink(mailPath, (unlinkError) => {
+        if (unlinkError) {
+          this.logger.error(`Failed to delete file ${mailPath}`, unlinkError);
+        }
+      });
+      callback(error);
+    });
+
+    writeStream.on('error', (error) => {
+      this.logger.error(`Write stream error for ${connection.id}`, error);
+      callback(error);
+    });
+
+    writeStream.on('finish', async () => {
+      try {
+        await this.dataReady(connection);
+        callback();
+      } catch (error) {
+        this.logger.error(`Error in dataReady for ${connection.id}`, error);
+        callback(error);
+      }
+    });
   }
 
   private async dataReady(connection) {
-    this.logger.verbose(
-      connection.id +
-        ' Processing message from ' +
-        connection.envelope.mailFrom.address,
-    );
+    try {
+      this.logger.verbose(
+        `${connection.id} Processing message from ${connection.envelope.mailFrom.address}`,
+      );
 
-    //  Get the raw email from the temp directory.
-    const rawEmail = await this.retrieveRawEmail(connection);
+      // Get the raw email from the temp directory.
+      const rawEmail = await this.retrieveRawEmail(connection);
 
-    this.logger.fatal(rawEmail, 'parsedEmail');
+      const jobPromises = connection.envelope.rcptTo.map(async (toAddress) => {
+        const { isMember, slug, username, domain } = this.parseEmailAddress(
+          toAddress.address.toLowerCase(),
+          this.configuration.domain_lists,
+        );
+
+        if (!domain) {
+          throw new Error('Invalid Email');
+        }
+
+        const baseJobData = { slug, rawMail: JSON.stringify(rawEmail), domain };
+
+        if (isMember) {
+          const jobData: MemberViewMailJob['data'] = {
+            ...baseJobData,
+            username,
+          };
+          this.logger.verbose('triggering job for handling member view mail');
+          return this._inboundMailParseService.add(
+            QueueEventJobPattern.MAIL_MEMBER_VIEW,
+            jobData,
+            {
+              priority: JobPriority.HIGHEST,
+            },
+          );
+        } else {
+          const jobData: VisitorViewMailJob['data'] = baseJobData;
+          this.logger.verbose('triggering job for handling visitor view mail');
+          return this._inboundMailParseService.add(
+            QueueEventJobPattern.MAIL_VISITOR_VIEW,
+            jobData,
+            {
+              priority: JobPriority.HIGH,
+            },
+          );
+        }
+      });
+
+      await Promise.all(jobPromises);
+    } catch (error) {
+      this.logger.error('Exception occurred while performing onData callback');
+      this.logger.error(error);
+      throw error;
+    }
   }
 
   private async retrieveRawEmail(connection) {
-    const rawEmail = await fs.promises.readFile(connection.mailPath);
-    return rawEmail.toString();
+    try {
+      const rawEmail = await fs.promises.readFile(connection.mailPath, 'utf8');
+      await fs.promises.unlink(connection.mailPath);
+      return rawEmail;
+    } catch (error) {
+      this.logger.error(
+        `Error processing email file: ${connection.mailPath}`,
+        error,
+      );
+
+      throw error;
+    }
+  }
+
+  private parseEmailAddress(
+    address: string,
+    domains: string[],
+  ): {
+    isMember: boolean;
+    slug: string | null;
+    username: string | null;
+    domain: string | null;
+  } {
+    const lowerCaseAddress = address.toLowerCase();
+    const parts = lowerCaseAddress.split('@');
+
+    if (parts.length < 2) {
+      return { isMember: false, slug: null, username: null, domain: null };
+    }
+
+    const slugPart = parts[0];
+    const domainPart = parts.slice(1).join('@');
+    const domainParts = domainPart.split('.');
+
+    if (domainParts.length < 2) {
+      return { isMember: false, slug: null, username: null, domain: null };
+    }
+
+    const tld = domainParts.pop()!;
+    const mainDomain = domainParts.pop()!;
+    const fullDomain = `${mainDomain}.${tld}`;
+
+    if (!domains.includes(fullDomain)) {
+      return { isMember: false, slug: null, username: null, domain: null };
+    }
+
+    if (domainParts.length === 0) {
+      // Case 1: *@domain.tld
+      return {
+        isMember: false,
+        slug: slugPart,
+        username: null,
+        domain: fullDomain,
+      };
+    } else {
+      // Case 2: *@*.domain.tld
+      return {
+        isMember: true,
+        slug: slugPart,
+        username: domainParts.join('.'),
+        domain: fullDomain,
+      };
+    }
   }
 
   // private async validateDkim(connection, rawEmail) {
