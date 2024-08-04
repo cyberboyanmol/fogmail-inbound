@@ -23,7 +23,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
   private smtp: SMTPServer;
   constructor(
     private readonly mailUtilities: MailUtilitiesService,
-    private configService: ConfigService,
+    private readonly configService: ConfigService,
     @InjectInboundMailParseQueue() private _inboundMailParseService: Queue,
   ) {
     this.onAuth = this.onAuth.bind(this);
@@ -34,10 +34,19 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     this.configuration = {
       port: this.configService.get<number>('PORT'),
       tmp: this.configService.get<string>('TMP'),
-      profile: this.configService.get<boolean>('PROFILE'),
-      disableDkim: this.configService.get<boolean>('DISABLE_DKIM'),
-      disableSpamScore: this.configService.get<boolean>('DISABLE_SPAM_SCORE'),
-      disableSpf: this.configService.get<boolean>('DISABLE_SPF'),
+      // Temporary Fixing this issue: Instead of getting boolean getting string
+      profile:
+        this.configService.get<string>('PROFILE') === 'true' ? true : false,
+      disableDkim:
+        this.configService.get<string>('DISABLE_DKIM') === 'true'
+          ? true
+          : false,
+      disableSpamScore:
+        this.configService.get<string>('DISABLE_SPAM_SCORE') === 'true'
+          ? true
+          : false,
+      disableSpf:
+        this.configService.get<string>('DISABLE_SPF') === 'true' ? true : false,
     };
   }
   onModuleInit() {
@@ -51,6 +60,7 @@ export class SmtpService implements OnModuleInit, OnModuleDestroy {
     if (!fs.existsSync(this.configuration.tmp)) {
       shell.mkdir('-p', this.configuration.tmp);
     }
+
     /* Basic memory profiling. */
     if (this.configuration.profile) {
       this.logger.log('Enable memory profiling');
